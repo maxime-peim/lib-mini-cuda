@@ -10,14 +10,30 @@ driver, captures, trace tools, and protocol notes.
 
 - This revision targets NVIDIA driver 610.43.02. Supported architectures are
   Hopper, Ampere GA100 (`mc/arch/ampere`), Ampere GA10x
-  (`mc/arch/ampere_ga10x`) and Ada, each verified on hardware. Blackwell is
-  designed for but not implemented. Note GA100 and GA10x report the same
+  (`mc/arch/ampere_ga10x`), Ada and Blackwell GB20x (`mc/arch/blackwell`),
+  each verified on hardware. Note GA100 and GA10x report the same
   architecture id and are told apart by `rm_impl_mask`, so a new backend
   sharing an architecture must narrow both masks.
+- The Blackwell backend carries two qualifications the others do not. It was
+  verified on drivers 620.70.06 (GB206, RTX PRO 2000 Blackwell Laptop) and
+  595.71.05 (GB202, RTX PRO 5000 Blackwell) rather than on the pinned
+  610.43.02. It offers every feature, including `xfer_sm`, on the strength
+  of a QMD V05 builder (`mc/arch/blackwell/qmd_v05.c`, from Mesa NVK under
+  the QMD exception below) and sm_120 cubins for both kernels. Its
+  `rm_impl_mask` names GB202 and GB206 — the parts actually run — and not
+  the rest of GB20x; adding one is a bit and a hardware run. See the header
+  of `mc/arch/blackwell/backend.c`.
+- Blackwell allocates BLACKWELL_COMPUTE_B (0xCEC0) but is driven with the
+  0xC7C0 method dialect, exactly as Hopper allocates 0xCBC0 and is driven
+  with 0xC7C0. `class/clcec0.h` is a stub with no method addresses, so that
+  rests on `hal/method_abi.h` asserting 0xCDC0 against 0xC7C0, on the same
+  file asserting Ampere's _A against its _B, and on the hardware run. Do not
+  quietly extend it to a class without at least that much.
 - Not every architecture provides every feature, and that is a property of the
-  silicon rather than a gap. Everything but Hopper lacks a BAR1 usermode
-  aperture, so no doorbell PTE, so no FB carrier and nothing SM-authored.
-  Query with `mc_feature_supported()`; never assume from the driver version.
+  silicon rather than a gap. Ampere and Ada lack a BAR1 usermode aperture, so
+  no doorbell PTE, so no FB carrier and nothing SM-authored. Hopper and
+  Blackwell offer everything. Query with `mc_feature_supported()`; never
+  assume from the driver version.
 - `third_party/open-gpu-kernel-modules` is pinned to the matching official
   source. Do not silently build against another driver revision: a different
   `NVIDIA_SRC` release is refused unless `MC_ALLOW_UNTESTED_DRIVER=1` is given,
@@ -58,6 +74,12 @@ driver, captures, trace tools, and protocol notes.
   address does not reliably fit under 2^40. That is `cap.userd_requires_vidmem`;
   `tests/unit/mc_userd_addr_test.c` checks each backend's flag against the
   header it comes from.
+- A kernel under `mc/kernels/` must not name a class id as a constant. The
+  copy class differs per architecture (`0xC8B5` on GH100, `0xCAB5` on
+  GB20x), and a `SET_OBJECT` naming a class the device does not expose
+  wedges the victim channel instead of refusing the method — which looks
+  like a malformed submission, not a wrong class. Pass it in through
+  `struct mc_sm_owner_args`, from `cls.dma_copy`.
 - Changes to a kernel under `mc/kernels/` must retain the Makefile's
   generated-SASS assertions, which are per-architecture and cover every kernel,
   not just `sm_owner.cu`. Review the disassembly when store or fence code

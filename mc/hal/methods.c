@@ -26,8 +26,8 @@
                                   * itself comes from the descriptor) */
 #include "class/clc86f.h"        /* NVC86F_SET_OBJECT + GP entry */
 #include "class/clc36f.h"        /* NVC36F_DMA_INCR_* method headers */
-#include "class/clc7c0.h"        /* compute method dialect (0xC7C0) */
-#include "class/cla0c0.h"        /* INVALIDATE_*_CACHE_NO_WFI */
+#include "class/clc7c0.h"        /* compute method dialect (0xC7C0),
+                                  * including INVALIDATE_*_CACHE_NO_WFI */
 #include "class/clb1c0.h"        /* INVALIDATE_SKED_CACHES */
 #include "class/cla06fsubch.h"   /* NVA06F_SUBCHANNEL_COPY_ENGINE / _COMPUTE */
 
@@ -271,11 +271,11 @@ uint32_t *mc_compute_write_setup(const mc_arch_desc_t *arch, uint32_t *pb)
   *pb++ = INCR_HEADER_COMPUTE(NVB1C0_INVALIDATE_SKED_CACHES, 1);
   *pb++ = 0;
 
-  *pb++ = INCR_HEADER_COMPUTE(NVA0C0_INVALIDATE_SAMPLER_CACHE_NO_WFI, 1);
-  *pb++ = NVA0C0_INVALIDATE_SAMPLER_CACHE_NO_WFI_LINES_ALL;
+  *pb++ = INCR_HEADER_COMPUTE(NVC7C0_INVALIDATE_SAMPLER_CACHE_NO_WFI, 1);
+  *pb++ = NVC7C0_INVALIDATE_SAMPLER_CACHE_NO_WFI_LINES_ALL;
 
-  *pb++ = INCR_HEADER_COMPUTE(NVA0C0_INVALIDATE_TEXTURE_HEADER_CACHE_NO_WFI, 1);
-  *pb++ = NVA0C0_INVALIDATE_TEXTURE_HEADER_CACHE_NO_WFI_LINES_ALL;
+  *pb++ = INCR_HEADER_COMPUTE(NVC7C0_INVALIDATE_TEXTURE_HEADER_CACHE_NO_WFI, 1);
+  *pb++ = NVC7C0_INVALIDATE_TEXTURE_HEADER_CACHE_NO_WFI_LINES_ALL;
 
   *pb++ = INCR_HEADER_COMPUTE(NVC7C0_SET_SHADER_SHARED_MEMORY_WINDOW_A, 2);
   *pb++ = (NvU32)(smem_window >> 32);

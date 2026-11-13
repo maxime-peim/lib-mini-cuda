@@ -85,6 +85,17 @@ struct mc_sm_owner_args {
 
     uint32_t dma_sema_poll_expected;  /* zeroed when dma_sema_poll_va == 0 */
     uint32_t dma_sema_poll_budget;    /* iteration cap; 0 disables the loop */
+
+    /* SET_OBJECT payload binding subch 4 to the victim channel's copy
+     * engine -- the architecture's dma_copy class id, supplied by the host
+     * from mc_arch_desc_t.cls.dma_copy.
+     *
+     * This is a parameter rather than a constant because the copy class is
+     * per-architecture: HOPPER_DMA_COPY_A (0xC8B5) on GH100,
+     * BLACKWELL_DMA_COPY_B (0xCAB5) on GB20x, and a device that does not
+     * expose the class named here wedges its channel rather than refusing
+     * the method. */
+    uint32_t ce_class_id;
 };
 
 #endif /* MC_SM_OWNER_ARGS_H */

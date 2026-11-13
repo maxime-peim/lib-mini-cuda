@@ -57,6 +57,7 @@ static int failures;
 
 extern const mc_compute_ops_t mc_arch_ampere_compute;   /* QMD V03 */
 extern const mc_compute_ops_t mc_arch_hopper_compute;   /* QMD V04 */
+extern const mc_compute_ops_t mc_arch_blackwell_compute;/* QMD V05 */
 
 /* Distinctive inputs: every nibble different, so a misplaced field shows as a
  * wrong value rather than an accidental match.  Both addresses are 256-byte
@@ -122,6 +123,41 @@ static const struct golden_dw v04_golden[] = {
     {  49, 0x0100006fu },
 };
 
+/* V05 (Blackwell).  Hand-checked against Mesa's clcec0qmd.h, field by field:
+ *   dw 4  = 0x011f0000   QMD_GROUP_ID 0x1f at bits 144-149, and
+ *                        QMD_TYPE = GRID_CTA (2) at bits 151-153
+ *   dw 14 = 0x00500100   MAJOR_VERSION 5 at bits 468-471,
+ *                        API_VISIBLE_CALL_LIMIT = NO_CHECK at bit 456
+ *   dw 32/33             PROGRAM_ADDRESS SHIFTED4: 0x123456789a00 >> 4
+ *                        = 0x123456789a0, split 32/21
+ *   dw 34 = 0x00010001   CTA_THREAD_DIMENSION0 and 1
+ *   dw 35 = 0x00002801   DIMENSION2 (8 bits) = 1, REGISTER_COUNT 40 at bit 1128
+ *   dw 39/40/41          GRID_WIDTH/HEIGHT/DEPTH = 1
+ *   dw 42/43             cbuf addr SHIFTED6 + size>>4 at bit 1395
+ *   dw 58 bit 1856       CONSTANT_BUFFER_VALID(0)
+ *
+ * Two things worth seeing side by side with v04_golden above.  dw 42/43 hold
+ * exactly the values V04 puts in dw 48/49 -- the cbuf encoding carried over
+ * unchanged while the position moved.  And V05 writes nothing at all in dw 0,
+ * 13, 17 or 18, where V04 keeps QMD_TYPE, CONSTANT_BUFFER_VALID,
+ * API_VISIBLE_CALL_LIMIT and its version nibbles: same size, same encodings,
+ * almost no overlap in placement.
+ */
+static const struct golden_dw v05_golden[] = {
+    {   4, 0x011f0000u },
+    {  14, 0x00500100u },
+    {  32, 0x456789a0u },
+    {  33, 0x00000123u },
+    {  34, 0x00010001u },
+    {  35, 0x00002801u },
+    {  39, 0x00000001u },
+    {  40, 0x00000001u },
+    {  41, 0x00000001u },
+    {  42, 0x37bc048cu },
+    {  43, 0x0100006fu },
+    {  58, 0x00000001u },
+};
+
 /* MC_QMD_DUMP=1 prints each builder's non-zero dwords in table form. */
 static void dump_nonzero(const char *what, const uint8_t *qmd, uint32_t bytes)
 {
@@ -176,28 +212,33 @@ static uint64_t get_bits(const uint8_t *qmd, unsigned hi, unsigned lo)
     return out;
 }
 
-static void build_both(uint8_t *v03, uint8_t *v04)
+static void build_all(uint8_t *v03, uint8_t *v04, uint8_t *v05)
 {
     mc_arch_ampere_compute.build_qmd(v03, TEST_PROG_VA, TEST_REGS,
                                      TEST_CB0_VA, TEST_CB0_BYTES);
     mc_arch_hopper_compute.build_qmd(v04, TEST_PROG_VA, TEST_REGS,
                                      TEST_CB0_VA, TEST_CB0_BYTES);
+    mc_arch_blackwell_compute.build_qmd(v05, TEST_PROG_VA, TEST_REGS,
+                                        TEST_CB0_VA, TEST_CB0_BYTES);
 }
 
 static void test_golden_dwords(void)
 {
     BEGIN_CHECK();
-    uint8_t v03[256], v04[384];
+    uint8_t v03[256], v04[384], v05[384];
 
-    build_both(v03, v04);
+    build_all(v03, v04, v05);
     dump_nonzero("V03", v03, sizeof(v03));
     dump_nonzero("V04", v04, sizeof(v04));
+    dump_nonzero("V05", v05, sizeof(v05));
 
     check_golden("V03", v03, sizeof(v03), v03_golden,
                  sizeof(v03_golden) / sizeof(v03_golden[0]));
     check_golden("V04", v04, sizeof(v04), v04_golden,
                  sizeof(v04_golden) / sizeof(v04_golden[0]));
-    END_CHECK("golden QMD dwords for both versions");
+    check_golden("V05", v05, sizeof(v05), v05_golden,
+                 sizeof(v05_golden) / sizeof(v05_golden[0]));
+    END_CHECK("golden QMD dwords for all three versions");
 }
 
 static void test_sizes_differ(void)
@@ -215,16 +256,25 @@ static void test_sizes_differ(void)
                "V03 version_major = %u", mc_arch_ampere_compute.version_major);
     EXPECT_MSG(mc_arch_hopper_compute.version_major == 4,
                "V04 version_major = %u", mc_arch_hopper_compute.version_major);
+
+    /* V05 is [u32; 96] too (NVK Qmd5_0), so it is the counter-example to the
+     * test's own name: same size as V04, almost entirely different layout.
+     * Size alone never identifies a QMD version. */
+    EXPECT_MSG(mc_arch_blackwell_compute.qmd_bytes == 384,
+               "V05 qmd_bytes = %u, expected 384",
+               mc_arch_blackwell_compute.qmd_bytes);
+    EXPECT_MSG(mc_arch_blackwell_compute.version_major == 5,
+               "V05 version_major = %u", mc_arch_blackwell_compute.version_major);
     END_CHECK("QMD versions differ in size, not just field placement");
 }
 
 static void test_cbuf_addr_shift_differs(void)
 {
     BEGIN_CHECK();
-    uint8_t v03[256], v04[384];
+    uint8_t v03[256], v04[384], v05[384];
     uint64_t lo, hi;
 
-    build_both(v03, v04);
+    build_all(v03, v04, v05);
 
     /* NVK gives V03 qmd_impl_set_cbuf!(..., NONE, SHIFTED4): the address is
      * stored whole.  V04 uses SHIFTED6.  Getting this wrong points CB0 64x
@@ -248,16 +298,27 @@ static void test_cbuf_addr_shift_differs(void)
                "V03 cbuf size field");
     EXPECT_MSG(get_bits(v04, 1599, 1587) == (TEST_CB0_BYTES >> 4),
                "V04 cbuf size field");
-    END_CHECK("V03 stores cbuf addresses unshifted, V04 shifts by 6");
+
+    /* V05 shifts by 6 like V04, but from entirely different bit positions --
+     * the encoding carried over, the layout did not. */
+    lo = get_bits(v05, 1375, 1344);
+    hi = get_bits(v05, 1394, 1376);
+    EXPECT_MSG(((hi << 32) | lo) == (TEST_CB0_VA >> 6),
+               "V05 cbuf addr = %#llx, expected %#llx (>>6)",
+               (unsigned long long)((hi << 32) | lo),
+               (unsigned long long)(TEST_CB0_VA >> 6));
+    EXPECT_MSG(get_bits(v05, 1407, 1395) == (TEST_CB0_BYTES >> 4),
+               "V05 cbuf size field");
+    END_CHECK("V03 stores cbuf addresses unshifted, V04 and V05 shift by 6");
 }
 
 static void test_program_address(void)
 {
     BEGIN_CHECK();
-    uint8_t v03[256], v04[384];
+    uint8_t v03[256], v04[384], v05[384];
     uint64_t lo, hi;
 
-    build_both(v03, v04);
+    build_all(v03, v04, v05);
 
     lo = get_bits(v03, 1567, 1536);
     hi = get_bits(v03, 1584, 1568);
@@ -266,15 +327,25 @@ static void test_program_address(void)
     lo = get_bits(v04, 1247, 1216);
     hi = get_bits(v04, 1272, 1248);
     EXPECT_MSG(((hi << 32) | lo) == TEST_PROG_VA, "V04 program address");
-    END_CHECK("program address round-trips in both versions");
+
+    /* V05 is the odd one out: PROGRAM_ADDRESS_*_SHIFTED4, so the stored
+     * value is the VA >>4.  Writing the raw VA here would send SKED to an
+     * address 16x too high. */
+    lo = get_bits(v05, 1055, 1024);
+    hi = get_bits(v05, 1076, 1056);
+    EXPECT_MSG(((hi << 32) | lo) == (TEST_PROG_VA >> 4),
+               "V05 program address = %#llx, expected %#llx (>>4)",
+               (unsigned long long)((hi << 32) | lo),
+               (unsigned long long)(TEST_PROG_VA >> 4));
+    END_CHECK("program address round-trips in all three versions");
 }
 
 static void test_version_and_caching(void)
 {
     BEGIN_CHECK();
-    uint8_t v03[256], v04[384];
+    uint8_t v03[256], v04[384], v05[384];
 
-    build_both(v03, v04);
+    build_all(v03, v04, v05);
 
     /* Both put the version nibbles in the same place, which is exactly why
      * the rest being different is easy to miss. */
@@ -295,15 +366,27 @@ static void test_version_and_caching(void)
     /* CONSTANT_BUFFER_VALID(0): bit 640 on V03, bit 416 on V04. */
     EXPECT_MSG(get_bits(v03, 640, 640) == 1, "V03 CONSTANT_BUFFER_VALID(0)");
     EXPECT_MSG(get_bits(v04, 416, 416) == 1, "V04 CONSTANT_BUFFER_VALID(0)");
+
+    /* V05 moves even the version nibbles, which V03 and V04 share: major is
+     * MW(471:468) and minor MW(467:464). */
+    EXPECT_MSG(get_bits(v05, 471, 468) == 5, "V05 major version");
+    EXPECT_MSG(get_bits(v05, 467, 464) == 0, "V05 minor version");
+    EXPECT_MSG(get_bits(v05, 1136, 1128) == TEST_REGS, "V05 REGISTER_COUNT");
+    EXPECT_MSG(get_bits(v05, 1856, 1856) == 1, "V05 CONSTANT_BUFFER_VALID(0)");
+
+    /* QMD_GROUP_ID = 0x1f is set by NVK's Qmd5_0::new and has no V04
+     * counterpart; leaving it zero is not the same as not setting it. */
+    EXPECT_MSG(get_bits(v05, 149, 144) == 0x1f, "V05 QMD_GROUP_ID");
+    EXPECT_MSG(get_bits(v05, 153, 151) == 2, "V05 QMD_TYPE = GRID_CTA");
     END_CHECK("version, caching, register-count and cbuf-valid fields");
 }
 
 static void test_grid_dims(void)
 {
     BEGIN_CHECK();
-    uint8_t v03[256], v04[384];
+    uint8_t v03[256], v04[384], v05[384];
 
-    build_both(v03, v04);
+    build_all(v03, v04, v05);
 
     /* Both launch a single CTA of a single thread; the fields are named
      * CTA_RASTER_* on V03 and GRID_* on V04, at different offsets. */
@@ -316,6 +399,18 @@ static void test_grid_dims(void)
     EXPECT_MSG(get_bits(v04, 1071, 1056) == 1, "V04 GRID_HEIGHT");
     EXPECT_MSG(get_bits(v04, 1103, 1088) == 1, "V04 GRID_DEPTH");
     EXPECT_MSG(get_bits(v04, 1167, 1152) == 1, "V04 CTA_THREAD_DIMENSION0");
+
+    EXPECT_MSG(get_bits(v05, 1279, 1248) == 1, "V05 GRID_WIDTH");
+    EXPECT_MSG(get_bits(v05, 1295, 1280) == 1, "V05 GRID_HEIGHT");
+    EXPECT_MSG(get_bits(v05, 1327, 1312) == 1, "V05 GRID_DEPTH");
+    EXPECT_MSG(get_bits(v05, 1103, 1088) == 1, "V05 CTA_THREAD_DIMENSION0");
+
+    /* V05's GRID_WIDTH sits where V04 keeps PROGRAM_ADDRESS_LOWER.  A V04
+     * builder pointed at a V05 QMD would write a grid dimension over the
+     * program address, so pin that the two really are different. */
+    EXPECT_MSG(get_bits(v05, 1055, 1024) != 1 || TEST_PROG_VA == (1ULL << 4),
+               "V05 bits 1055:1024 are PROGRAM_ADDRESS_LOWER_SHIFTED4, "
+               "not GRID_WIDTH");
     END_CHECK("single-CTA single-thread grid dimensions");
 }
 
@@ -344,7 +439,16 @@ static void test_no_stray_writes(void)
             EXPECT_MSG(0, "V04 builder wrote past 384 bytes, at offset %u", i);
             break;
         }
-    END_CHECK("neither builder writes outside its QMD");
+
+    memset(buf, 0xA5, sizeof(buf));
+    mc_arch_blackwell_compute.build_qmd(buf, TEST_PROG_VA, TEST_REGS,
+                                        TEST_CB0_VA, TEST_CB0_BYTES);
+    for (i = 384; i < sizeof(buf); i++)
+        if (buf[i] != 0xA5) {
+            EXPECT_MSG(0, "V05 builder wrote past 384 bytes, at offset %u", i);
+            break;
+        }
+    END_CHECK("no builder writes outside its QMD");
 }
 
 static void test_cb0_offsets_are_per_arch(void)
@@ -362,6 +466,12 @@ static void test_cb0_offsets_are_per_arch(void)
     EXPECT_MSG(mc_arch_hopper_compute.cb0_off_dst_lo == 0x210u,
                "sm_90 dst_lo = %#x, expected 0x210",
                mc_arch_hopper_compute.cb0_off_dst_lo);
+    EXPECT_MSG(mc_arch_blackwell_compute.cb0_off_dst_lo == 0x380u,
+               "sm_120 dst_lo = %#x, expected 0x380",
+               mc_arch_blackwell_compute.cb0_off_dst_lo);
+    EXPECT_MSG(mc_arch_blackwell_compute.cb0_off_token == 0x388u,
+               "sm_120 token = %#x, expected 0x388",
+               mc_arch_blackwell_compute.cb0_off_token);
     EXPECT_MSG(mc_arch_hopper_compute.cb0_off_token == 0x218u,
                "sm_90 token = %#x, expected 0x218",
                mc_arch_hopper_compute.cb0_off_token);

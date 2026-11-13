@@ -26,12 +26,7 @@
 
 #include "nvtypes.h"
 #include "nvmisc.h"
-#include "class/clc36f.h"        /* NVC36F_DMA_INCR_* (header-encoding macros) */
-#include "class/clc7c0.h"        /* HOPPER-inherited compute methods */
 #include "class/clc86f.h"        /* NVC86F_SET_OBJECT */
-#include "class/clcbc0.h"        /* HOPPER_COMPUTE_A class id */
-#include "class/cla0c0.h"        /* INVALIDATE_*_CACHE_NO_WFI */
-#include "class/clb1c0.h"        /* INVALIDATE_SKED_CACHES */
 #include "class/cla06fsubch.h"   /* NVA06F_SUBCHANNEL_COMPUTE */
 
 #include <mc/mc_experimental.h>

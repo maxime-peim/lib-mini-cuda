@@ -114,7 +114,7 @@ ARCH_SM_ampere       := sm_80
 ARCH_SM_ampere_ga10x := sm_86
 ARCH_SM_ada       := sm_89
 ARCH_SM_hopper    := sm_90
-ARCH_SM_blackwell := sm_100
+ARCH_SM_blackwell := sm_120
 
 # Sources, grouped by layer.  core/ and hal/ are architecture-neutral;
 # driver/ wraps the RM and UVM ioctl surfaces; arch/<name>/ holds
@@ -219,7 +219,8 @@ UNIT_SRCS_mc_arch_detect_test   := mc/hal/detect.c mc/hal/registry.c \
                                    $(ALL_BACKEND_SRCS)
 UNIT_WRAP_mc_qmd_test           := none
 UNIT_SRCS_mc_qmd_test           := mc/arch/ampere/qmd_v03.c \
-                                   mc/arch/hopper/qmd_v04.c
+                                   mc/arch/hopper/qmd_v04.c \
+                                   mc/arch/blackwell/qmd_v05.c
 UNIT_WRAP_mc_userd_addr_test    := none
 UNIT_SRCS_mc_userd_addr_test    := $(ALL_BACKEND_SRCS) mc/hal/registry.c
 

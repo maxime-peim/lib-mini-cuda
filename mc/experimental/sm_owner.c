@@ -30,10 +30,12 @@
  * If neither fires, the kernel itself died (likely a bad address /
  * Xid 31 — check dmesg).
  *
- * CB0 parameter offsets are NVCC-determined, starting at 0x210.  If
- * sm_owner.cu's parameter list is reordered, regenerate the header
- * (`make mc/arch/hopper/sm_owner_sass.h`) and update the offsets below by
- * inspecting `cuobjdump --dump-sass mc/kernels/sm_owner.cubin`.
+ * CB0 parameter offsets are NVCC-determined and differ per SM version
+ * (0x210 on sm_90, 0x380 on sm_120), so they are read from the
+ * architecture's compute ops rather than written down here.  If
+ * sm_owner.cu's parameter list is reordered, regenerate the headers
+ * (`make kernels`) and re-read the offsets with
+ * `cuobjdump --dump-sass mc/kernels/sm_owner.cubin`.
  */
 
 #include <emmintrin.h>           /* _mm_clflush — no-op on today's WC
@@ -47,12 +49,7 @@
 
 #include "nvtypes.h"
 #include "nvmisc.h"
-#include "class/clc36f.h"        /* NVC36F_DMA_INCR_* (header-encoding macros) */
-#include "class/clc7c0.h"        /* HOPPER-inherited compute methods */
 #include "class/clc86f.h"        /* NVC86F_SET_OBJECT */
-#include "class/clcbc0.h"        /* HOPPER_COMPUTE_A class id */
-#include "class/cla0c0.h"        /* INVALIDATE_*_CACHE_NO_WFI */
-#include "class/clb1c0.h"        /* INVALIDATE_SKED_CACHES */
 #include "class/cla06fsubch.h"   /* NVA06F_SUBCHANNEL_COMPUTE */
 
 #include <mc/mc_experimental.h>
@@ -83,7 +80,9 @@
  * Total size: 8 u64 (64 bytes) + 6 u32 (24 bytes) = 88 bytes.  No
  * tail padding (struct alignment is 8, last field at offset 84
  * brings us to 88 = multiple of 8). */
-_Static_assert(sizeof(struct mc_sm_owner_args) == 88,
+_Static_assert(offsetof(struct mc_sm_owner_args, ce_class_id)            == 88,
+               "sm_owner args ABI: ce_class_id offset");
+_Static_assert(sizeof(struct mc_sm_owner_args) == 96,
                "struct mc_sm_owner_args size drifted from the host/device ABI");
 _Static_assert(offsetof(struct mc_sm_owner_args, pb_gpu_va)              == 0,
                "mc_sm_owner_args.pb_gpu_va offset drift");
@@ -108,8 +107,8 @@ _Static_assert(offsetof(struct mc_sm_owner_args, dma_sema_poll_budget)   == 84,
  *
  * The kernel takes a single `struct mc_sm_owner_args *` parameter
  * (see kernels/sm_owner_args.h).  NVCC packs that pointer at the start of
- * CB0's kernel-parameter band, byte 0x210 on observed CUDA 13.x
- * (the system-reserved band ends there).  We patch a single u64
+ * CB0's kernel-parameter band, which is 0x210 on sm_90 and 0x380 on
+ * sm_120 (the system-reserved band ends there).  We patch a single u64
  * (the args struct GPU VA) at that offset; the kernel does
  * LDG.E.64 / LDG.E through the pointer for each field.
  *
@@ -137,41 +136,63 @@ _Static_assert(offsetof(struct mc_sm_owner_args, dma_sema_poll_budget)   == 84,
  * ends around 0x260 with one pointer).  Saves a separate sysmem
  * allocation; same cacheable mapping the kernel reads through
  * normal GPU L2 / GMMU. */
-#define MC_SMO_OFF_ARGS_PTR            0x210u
-#define MC_SMO_ARGS_CB0_OFFSET         0x300u
+/* Both offsets are derived, not written down.
+ *
+ * The kernel-parameter slot is the architecture's first argument offset --
+ * the same place store_dword's `dst` goes -- so it is cb0_off_dst_lo.  It is
+ * 0x210 on sm_90 and 0x380 on sm_120; hardcoding either silently writes the
+ * args pointer where the other architecture's kernel never reads, and the
+ * kernel then runs to completion having dereferenced garbage.  That is not a
+ * crash, it is a submission that does nothing, which is why this is derived.
+ *
+ * The args struct goes immediately after the bound constant buffer, at
+ * mc_cb0_alloc_bytes().  That is past the parameter band by construction, so
+ * it cannot land on NVCC's system band -- on sm_120 the global memdesc sits
+ * at 0x358 and must read zero, which a fixed 0x300 would have overwritten.
+ * The CB0 region is MC_GPFIFO_USERD_SIZE, far larger than either, so there
+ * is room after the bound buffer.
+ *
+ * For sm_90 these evaluate to exactly the 0x210 and 0x300 this code used as
+ * literals, so Hopper's behaviour is unchanged. */
+#define MC_SMO_OFF_ARGS_PTR(c)         ((c)->cb0_off_dst_lo)
+#define MC_SMO_ARGS_CB0_OFFSET(c)      (mc_cb0_alloc_bytes(c))
 
 
 /* ── Build the sm_owner_kernel argument tuple ─────────────────────────
  *
  * The kernel takes one parameter — a pointer to struct mc_sm_owner_args.
- * We place the args struct inside the same CB0 sysmem allocation at
- * offset MC_SMO_ARGS_CB0_OFFSET (0x300), and write its GPU VA at
- * MC_SMO_OFF_ARGS_PTR (0x210, NVCC's first kernel-parameter slot).
+ * We place the args struct inside the same CB0 sysmem allocation just
+ * past the bound constant buffer, and write its GPU VA into NVCC's
+ * first kernel-parameter slot.  Both offsets come from the
+ * architecture's compute ops; see MC_SMO_* above.
  *
- * CB0's parameter band (0x210..) holds only the single u64 args
- * pointer; the system band (0x000-0x210) is owned by NVCC.  No need
- * to zero either — we always overwrite both the pointer slot and
- * every field of the args struct on every call. */
-static void patch_cb0(uint8_t                       *cb0,
+ * The parameter band holds only the single u64 args pointer; the
+ * system band below it is owned by NVCC.  No need to zero either — we
+ * always overwrite both the pointer slot and every field of the args
+ * struct on every call. */
+static void patch_cb0(const mc_compute_ops_t        *compute,
+                      uint8_t                       *cb0,
                       uint64_t                       cb0_gpu_va,
                       const struct mc_sm_owner_args *args)
 {
-  /* Place the args struct at the agreed-upon offset inside CB0. */
+  uint32_t args_off = MC_SMO_ARGS_CB0_OFFSET(compute);
+  uint32_t ptr_off  = MC_SMO_OFF_ARGS_PTR(compute);
+
+  /* Place the args struct just past the bound constant buffer. */
   struct mc_sm_owner_args *cb0_args =
-      (struct mc_sm_owner_args *)(cb0 + MC_SMO_ARGS_CB0_OFFSET);
+      (struct mc_sm_owner_args *)(cb0 + args_off);
   *cb0_args = *args;
 
   /* Write the args-struct GPU VA into the kernel-parameter slot. */
-  *(uint64_t *)(cb0 + MC_SMO_OFF_ARGS_PTR) =
-      cb0_gpu_va + MC_SMO_ARGS_CB0_OFFSET;
+  *(uint64_t *)(cb0 + ptr_off) = cb0_gpu_va + args_off;
 
   /* Make the CB0 stores globally visible before the kernel launch.
    * CB0 is allocated write-combined (mc_va_space_alloc_scratch_wc),
    * so the stores above sit in the CPU's write-combining buffers,
    * not in cache lines — the SFENCE below is what drains those
    * buffers to DRAM, and it is the instruction doing the work here.
-   * The SM kernel then reads CB0 — the parameter slot at 0x210 and
-   * the args struct at 0x300 — through GPU L2 + GMMU PTE -> sysmem.
+   * The SM kernel then reads CB0 — the parameter slot and the args
+   * struct — through GPU L2 + GMMU PTE -> sysmem.
    *
    * The three CLFLUSHes are retained deliberately even though on WC
    * pages they are architecturally no-ops (WC never allocates cache
@@ -180,12 +201,11 @@ static void patch_cb0(uint8_t                       *cb0,
    * pushes dirty L1/L2/L3 lines out before the SM's read, closing
    * the stale-prior-call-values hazard deterministically — so they
    * stay as insurance at ~ns per line.  They cover what we wrote:
-   *   - the line containing CB0[0x210] (the args ptr)
-   *   - the two lines spanning CB0[0x300..0x357] (the 88-byte
-   *     args struct: 0x300-0x33F + 0x340-0x357) */
-  _mm_clflush(cb0 + MC_SMO_OFF_ARGS_PTR);
-  _mm_clflush(cb0 + MC_SMO_ARGS_CB0_OFFSET);
-  _mm_clflush(cb0 + MC_SMO_ARGS_CB0_OFFSET + 64);
+   *   - the line containing the args pointer
+   *   - the two lines spanning the 88-byte args struct */
+  _mm_clflush(cb0 + ptr_off);
+  _mm_clflush(cb0 + args_off);
+  _mm_clflush(cb0 + args_off + 64);
   __asm__ __volatile__("sfence" ::: "memory");
 }
 
@@ -384,7 +404,8 @@ mc_status_t mc_sm_owner_submit(mc_ctx_t *ctx, mc_vas_t vas, uint64_t src_gpu_va,
 
   /* Patch CB0 with the per-call argument tuple.  The kernel reads
    * one u64 (the args-struct GPU VA) at CB0[0x210], then dereferences
-   * it for every field.  Sysmem path leaves dma_sema_poll_va = 0
+   * it for every field.  The slot it reads is per-SM-version; see
+   * MC_SMO_OFF_ARGS_PTR.  Sysmem path leaves dma_sema_poll_va = 0
    * which the kernel treats as "skip the poll loop". */
   struct mc_sm_owner_args args = {
       .pb_gpu_va         = dma_ch->pb_gpu_va,
@@ -408,8 +429,12 @@ mc_status_t mc_sm_owner_submit(mc_ctx_t *ctx, mc_vas_t vas, uint64_t src_gpu_va,
       .gp_put_in         = dma_ch->gp_put,
       .dma_sema_poll_expected = 0,
       .dma_sema_poll_budget   = 0,
+      /* The victim channel's own copy class, not a constant: the kernel
+       * emits this as its SET_OBJECT payload, and naming a class the device
+       * does not expose wedges the channel instead of failing the method. */
+      .ce_class_id            = dma_ch->arch->cls.dma_copy,
   };
-  patch_cb0(mod->cb0_cpu, mod->cb0_gpu_va, &args);
+  patch_cb0(compute_ch->arch->compute, mod->cb0_cpu, mod->cb0_gpu_va, &args);
 
   if (mc_debug())
   {

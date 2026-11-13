@@ -72,7 +72,7 @@ int __wrap_ioctl(int fd, unsigned long request, ...)
   EXPECT(strcmp(p->versionString, MC_NVIDIA_DRIVER_VERSION) == 0);
 
   p->reply = NV_RM_API_VERSION_REPLY_RECOGNIZED;
-  snprintf(p->versionString, sizeof(p->versionString), "%s", "610.57.04");
+  snprintf(p->versionString, sizeof(p->versionString), "%s", "001.01.01");
   errno = EINVAL;
   return -1;
 }

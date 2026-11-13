@@ -151,11 +151,28 @@ static void test_lookup_does_not_confuse_implementations(void)
       EXPECT(got->rm_architecture == other_archs[k]);
   }
 
-  /* No backend may claim an architecture it was not registered for. */
+  /* Every backend is reachable, and no backend may claim an architecture it
+   * was not registered for.
+   *
+   * The implementation to look up has to come from the backend's own mask
+   * rather than being 0.  Implementation 0 is only reachable when some
+   * backend of that architecture claims it, and that is not guaranteed: the
+   * Blackwell backend claims GB206 (implementation 6) and nothing claims
+   * GB200 (implementation 0), so a hardcoded 0 would assert that a GB200
+   * part resolves -- a chip this build deliberately does not support.
+   * Asking each backend for an implementation it actually claims keeps the
+   * assertion at full strength and tests something true. */
   for (i = 0; i < n; i++)
   {
-    const mc_arch_desc_t *got =
-        mc_arch_registry_lookup(all[i]->rm_architecture, 0);
+    const mc_arch_desc_t *got;
+    NvU32 impl = 0;
+
+    /* Lowest implementation in the mask; 0 when the mask means "any". */
+    if (all[i]->rm_impl_mask != 0)
+      while ((all[i]->rm_impl_mask & (1u << impl)) == 0)
+        impl++;
+
+    got = mc_arch_registry_lookup(all[i]->rm_architecture, impl);
     EXPECT(got != NULL && got->rm_architecture == all[i]->rm_architecture);
   }
   printf("PASS: implementation 0 does not cross architectures\n");

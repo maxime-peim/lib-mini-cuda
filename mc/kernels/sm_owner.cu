@@ -108,9 +108,11 @@ constexpr uint32_t NVC8B5_LINE_LENGTH_IN         = 0x00000418;
 constexpr uint32_t NVC8B5_SET_SEMAPHORE_A        = 0x00000240;
 constexpr uint32_t NVC8B5_LAUNCH_DMA             = 0x00000300;
 
-/* HOPPER_DMA_COPY_A class id — the SET_OBJECT payload that binds
- * subch 4 to the CE engine. */
-constexpr uint32_t HOPPER_DMA_COPY_A             = 0x0000C8B5;
+/* The SET_OBJECT payload that binds subch 4 to the CE engine is the
+ * architecture's copy class id, and it arrives in args->ce_class_id.
+ * It used to be a constant 0x0000C8B5 (HOPPER_DMA_COPY_A) here, which
+ * silently wedged the victim channel on any part that does not expose that
+ * class -- GB20x carries BLACKWELL_DMA_COPY_B (0xCAB5) instead. */
 
 /* LAUNCH_DMA flags word.  Bit positions (clc8b5.h):
  *
@@ -289,8 +291,8 @@ void sm_owner_kernel(struct mc_sm_owner_args *args)
 
     /*  [0]  SET_OBJECT header (1 payload dword) */
     stg_u32_sys(&pb[0], incr_header(NVC86F_SET_OBJECT, 1, SUBCH_CE));
-    /*  [1]  SET_OBJECT payload — bind HOPPER_DMA_COPY_A to subch 4 */
-    stg_u32_sys(&pb[1], HOPPER_DMA_COPY_A);
+    /*  [1]  SET_OBJECT payload — bind the arch's copy class to subch 4 */
+    stg_u32_sys(&pb[1], args->ce_class_id);
 
     /*  [2]  OFFSET_IN_UPPER header (2 payload dwords) */
     stg_u32_sys(&pb[2], incr_header(NVC8B5_OFFSET_IN_UPPER, 2, SUBCH_CE));
